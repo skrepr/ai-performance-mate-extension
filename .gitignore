@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output — regenerated door `npm run build` (prepublishOnly bij publish)
+dist/
+
+# npm/logs
+npm-debug.log*
+*.tsbuildinfo
+.npm/
+
+# Env / secrets
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
