@@ -32,7 +32,22 @@ final class ProfileReader
     /** Ondergrens memory_limit voor dit proces; zie ensureMemoryHeadroom(). */
     private const MIN_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024;
 
+    /** Aantal gedistilleerde profielen dat in-process gecachet blijft. */
+    private const MAX_CACHED_PROFILES = 20;
+
     private readonly FileProfilerStorage $storage;
+
+    /**
+     * Cache van gedistilleerde profielen. De MCP-server is langlevend en de
+     * agent-workflow leest hetzelfde profiel meerdere keren (breakdown → N+1 →
+     * diff); unserializen is de duurste operatie hier (±100x bestandsgrootte
+     * aan RAM). Profielen zijn immutable zodra geschreven, dus invalidatie is
+     * niet nodig. We bewaren het kleine gedistilleerde array, nooit het rauwe
+     * Profile-object.
+     *
+     * @var array<string, StructuredProfile>
+     */
+    private array $cache = [];
 
     public function __construct(
         private readonly string $profilerDir,
@@ -63,6 +78,14 @@ final class ProfileReader
         return $out;
     }
 
+    /** Token van het recentste request (optioneel gefilterd op URL-substring), of null. */
+    public function latestToken(string $urlFilter = ''): ?string
+    {
+        $metas = $this->findRecent(1, $urlFilter);
+
+        return $metas[0]['token'] ?? null;
+    }
+
     /**
      * Volledig, gestructureerd profiel voor één token, of null als het niet bestaat.
      *
@@ -72,10 +95,28 @@ final class ProfileReader
      */
     public function read(string $token): ?array
     {
-        $this->guardProfileSize($token);
+        if (isset($this->cache[$token])) {
+            $cached = $this->cache[$token];
+            // Herplaatsen naar het einde: recentst gebruikt wordt het laatst verdrongen.
+            unset($this->cache[$token]);
+            $this->cache[$token] = $cached;
+
+            return $cached;
+        }
+
+        $fileFound = $this->guardProfileSize($token);
         $profile = $this->storage->read($token);
         if (null === $profile) {
             return null;
+        }
+
+        // Fail-closed: de storage vond een profiel dat profileFilePath() niet kon
+        // vinden — dan is Symfony's padschema gewijzigd en staat de size-guard
+        // buitenspel. Hard falen zodat dit opgemerkt wordt i.p.v. een stille
+        // OOM-blootstelling. (Hercheck vangt de race af waarin het profiel pas
+        // ná de guard-check geschreven werd.)
+        if (!$fileFound && !is_file($this->profileFilePath($token))) {
+            throw new \LogicException(sprintf('Profiel %s is gelezen maar profileFilePath() vond het bestand niet: het padschema van FileProfilerStorage is vermoedelijk gewijzigd. Werk ProfileReader::profileFilePath() bij.', $token));
         }
 
         $out = [
@@ -113,6 +154,11 @@ final class ProfileReader
             $out['query_time_ms'] = round(array_sum(array_column($queries, 'ms')), 1);
         }
 
+        if (\count($this->cache) >= self::MAX_CACHED_PROFILES) {
+            array_shift($this->cache); // minst recent gebruikte staat vooraan
+        }
+        $this->cache[$token] = $out;
+
         return $out;
     }
 
@@ -122,18 +168,22 @@ final class ProfileReader
      * zou het proces met een niet-vangbare OOM omleggen. Ontbrekende bestanden laten
      * we door: storage->read() geeft daar netjes null op terug.
      *
+     * @return bool of het profielbestand op het verwachte pad gevonden is
+     *
      * @throws ProfileTooLargeException
      */
-    private function guardProfileSize(string $token): void
+    private function guardProfileSize(string $token): bool
     {
         $path = $this->profileFilePath($token);
         if (!is_file($path)) {
-            return;
+            return false;
         }
         $bytes = filesize($path);
         if (false !== $bytes && $bytes > $this->maxProfileBytes) {
             throw new ProfileTooLargeException($token, $bytes, $this->maxProfileBytes);
         }
+
+        return true;
     }
 
     /** Zelfde padschema als Symfony's FileProfilerStorage::getFilename(). */
@@ -159,8 +209,14 @@ final class ProfileReader
         }
     }
 
-    /** memory_limit-notatie ('128M', '1G', '-1', bytes) naar bytes; negatief = onbeperkt. */
-    private static function parseBytes(string $value): int
+    /**
+     * memory_limit-notatie ('128M', '1G', '-1', bytes) naar bytes; negatief = onbeperkt.
+     * Spiegelt bewust PHP's eigen zend_ini_parse_quantity: de integer-parse stopt bij
+     * het eerste niet-cijfer, dus '0.5G' is 0 — precies wat PHP er zelf van maakt.
+     *
+     * @internal publiek voor tests
+     */
+    public static function parseBytes(string $value): int
     {
         $value = trim($value);
         if ('' === $value) {

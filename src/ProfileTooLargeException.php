@@ -20,7 +20,7 @@ final class ProfileTooLargeException extends \RuntimeException
         public readonly int $maxBytes,
     ) {
         parent::__construct(sprintf(
-            'Profiel %s is %d bytes op schijf en overschrijdt de veilige leeslimiet van %d bytes; overgeslagen om een out-of-memory te voorkomen. Verhoog skrepr_runtime_mate.max_profile_bytes als je dit profiel toch wilt analyseren.',
+            'Profiel %s is %d bytes op schijf en overschrijdt de veilige leeslimiet van %d bytes; overgeslagen om een out-of-memory te voorkomen. Verhoog skrepr_mate.max_profile_bytes als je dit profiel toch wilt analyseren.',
             $token,
             $bytes,
             $maxBytes,

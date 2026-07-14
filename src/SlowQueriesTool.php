@@ -6,9 +6,6 @@ namespace Skrepr\SymfonyMate;
 
 use Mcp\Capability\Attribute\McpTool;
 
-/**
- * @phpstan-import-type Frame from Sql
- */
 final class SlowQueriesTool
 {
     use JsonResponse;
@@ -33,7 +30,6 @@ final class SlowQueriesTool
         $requests = max(1, min(50, $requests));
         $metas = $this->reader->findRecent($requests, $urlFilter ?? '');
 
-        /** @var array<string, array{total_ms: float, count: int, max_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, seen_on: array<string, true>}> $groups */
         $groups = [];
         $analyzed = 0;
         $skipped = [];
@@ -48,43 +44,27 @@ final class SlowQueriesTool
                 continue;
             }
             ++$analyzed;
-            foreach ($profile['queries'] as $q) {
-                $key = Sql::normalize($q['sql']);
-                $g = $groups[$key] ?? [
-                    'total_ms' => 0.0, 'count' => 0, 'max_ms' => 0.0,
-                    'sample_sql' => $q['sql'], 'originFrame' => null, 'chain' => [], 'seen_on' => [],
-                ];
-                $g['total_ms'] += $q['ms'];
-                ++$g['count'];
-                $g['max_ms'] = max($g['max_ms'], $q['ms']);
-                if (null === $g['originFrame']) {
-                    $tf = Sql::topFrame($q['backtrace']);
-                    if (null !== $tf) {
-                        $g['originFrame'] = $tf;
-                        $g['chain'] = Sql::frameChain($q['backtrace']);
-                    }
-                }
-                $g['seen_on']["{$profile['method']} {$profile['url']}"] = true;
-                $groups[$key] = $g;
-            }
+            $groups = QueryShapes::accumulate($groups, $profile['queries'], "{$profile['method']} {$profile['url']}");
         }
 
-        uasort($groups, static fn ($a, $b) => $b['total_ms'] <=> $a['total_ms']);
-
         $ranked = [];
-        foreach (\array_slice($groups, 0, max(1, $top), true) as $shape => $g) {
+        foreach (QueryShapes::rank($groups, $top) as $g) {
+            $shape = $g['sql_shape'];
             $ranked[] = [
-                'sql_shape' => $shape,
-                'total_ms' => round($g['total_ms'], 1),
-                'executions' => $g['count'],
-                'avg_ms' => round($g['total_ms'] / $g['count'], 2),
+                'sql_shape' => mb_substr($shape, 0, 400),
+                // Signaal conform Mate-designprincipes: de agent moet weten dat hij
+                // over een sample redeneert, niet over de volledige query.
+                ...(mb_strlen($shape) > 400 ? ['sql_shape_truncated' => true] : []),
+                'total_ms' => $g['total_ms'],
+                'executions' => $g['executions'],
+                'avg_ms' => $g['avg_ms'],
                 'max_ms' => $g['max_ms'],
                 'origin' => null !== $g['originFrame']
                     ? Sql::formatFrame($g['originFrame'])
                     : 'onbekend — zet doctrine.dbal.profiling_collect_backtrace: true in config/packages/dev/doctrine.yaml',
                 'origin_chain' => \count($g['chain']) > 1 ? $g['chain'] : null,
                 'origin_context' => Sql::sourceContext($g['originFrame']),
-                'seen_on' => \array_slice(array_keys($g['seen_on']), 0, 5),
+                'seen_on' => $g['seen_on'],
             ];
         }
 

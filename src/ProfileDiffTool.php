@@ -48,27 +48,10 @@ final class ProfileDiffTool
             return $this->json(['error' => 'Eén van beide profielen kon niet gelezen worden.']);
         }
 
-        $sBefore = $this->shapes($pBefore['queries']);
-        $sAfter = $this->shapes($pAfter['queries']);
-
-        $removed = [];
-        foreach ($sBefore as $shape => $count) {
-            if (!isset($sAfter[$shape])) {
-                $removed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
-            }
-        }
-        $added = [];
-        foreach ($sAfter as $shape => $count) {
-            if (!isset($sBefore[$shape])) {
-                $added[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
-            }
-        }
-        $changed = [];
-        foreach ($sBefore as $shape => $count) {
-            if (isset($sAfter[$shape]) && $sAfter[$shape] !== $count) {
-                $changed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'before' => $count, 'after' => $sAfter[$shape]];
-            }
-        }
+        $diff = QueryShapes::diff(
+            QueryShapes::countByShape($pBefore['queries']),
+            QueryShapes::countByShape($pAfter['queries']),
+        );
 
         return $this->json([
             'before' => ProfileReader::summarize($pBefore),
@@ -79,26 +62,10 @@ final class ProfileDiffTool
                 'query_count' => $this->delta((float) $pBefore['query_count'], (float) $pAfter['query_count']),
                 'query_time_ms' => $this->delta($pBefore['query_time_ms'], $pAfter['query_time_ms']),
             ],
-            'queries_removed' => $removed,
-            'queries_added' => $added,
-            'queries_changed' => $changed,
+            'queries_removed' => $diff['removed'],
+            'queries_added' => $diff['added'],
+            'queries_changed' => $diff['changed'],
         ]);
-    }
-
-    /**
-     * @param list<array{sql: string, ms: float, ...}> $queries
-     *
-     * @return array<string, int>
-     */
-    private function shapes(array $queries): array
-    {
-        $m = [];
-        foreach ($queries as $q) {
-            $shape = Sql::normalize($q['sql']);
-            $m[$shape] = ($m[$shape] ?? 0) + 1;
-        }
-
-        return $m;
     }
 
     private function delta(?float $a, ?float $b): ?float

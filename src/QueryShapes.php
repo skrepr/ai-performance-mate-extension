@@ -1,0 +1,206 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Skrepr\SymfonyMate;
+
+/**
+ * Pure aggregatielogica over query-lijsten uit profielen: shape-groepering,
+ * N+1-detectie en voor/na-diffs. Bewust vrij van IO zodat dit direct testbaar
+ * is; de tools mappen de uitkomst alleen nog naar JSON-output.
+ *
+ * @phpstan-import-type Frame from Sql
+ * @phpstan-import-type Query from ProfileReader
+ *
+ * @phpstan-type ShapeGroup array{total_ms: float, count: int, max_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, seen_on: array<string, true>}
+ * @phpstan-type RankedShape array{sql_shape: string, total_ms: float, executions: int, avg_ms: float, max_ms: float, originFrame: Frame|null, chain: list<string>, seen_on: list<string>}
+ * @phpstan-type OriginGroup array{shape: string, count: int, total_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, firstIndex: int}
+ * @phpstan-type Suspect array{executions: int, total_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, likely_parent: array{sql_shape: string, origin: string|null}|null}
+ */
+final class QueryShapes
+{
+    /**
+     * Telt de queries van één request bij in de shape-groepen (voor slow_queries).
+     * De origin-frames van de eerste query mét backtrace winnen per groep.
+     *
+     * @param array<string, ShapeGroup> $groups
+     * @param list<Query>               $queries
+     *
+     * @return array<string, ShapeGroup>
+     */
+    public static function accumulate(array $groups, array $queries, string $seenOn): array
+    {
+        foreach ($queries as $q) {
+            $key = Sql::normalize($q['sql']);
+            $g = $groups[$key] ?? [
+                'total_ms' => 0.0, 'count' => 0, 'max_ms' => 0.0,
+                'sample_sql' => $q['sql'], 'originFrame' => null, 'chain' => [], 'seen_on' => [],
+            ];
+            $g['total_ms'] += $q['ms'];
+            ++$g['count'];
+            $g['max_ms'] = max($g['max_ms'], $q['ms']);
+            if (null === $g['originFrame']) {
+                $tf = Sql::topFrame($q['backtrace']);
+                if (null !== $tf) {
+                    $g['originFrame'] = $tf;
+                    $g['chain'] = Sql::frameChain($q['backtrace']);
+                }
+            }
+            $g['seen_on'][$seenOn] = true;
+            $groups[$key] = $g;
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Traagste shapes eerst (op totale tijd), gemaximeerd op $top, met afgeleide
+     * avg_ms en seen_on afgekapt op 5 endpoints.
+     *
+     * @param array<string, ShapeGroup> $groups
+     *
+     * @return list<RankedShape>
+     */
+    public static function rank(array $groups, int $top): array
+    {
+        uasort($groups, static fn (array $a, array $b): int => $b['total_ms'] <=> $a['total_ms']);
+
+        $out = [];
+        foreach (\array_slice($groups, 0, max(1, $top), true) as $shape => $g) {
+            $out[] = [
+                'sql_shape' => $shape,
+                'total_ms' => round($g['total_ms'], 1),
+                'executions' => $g['count'],
+                'avg_ms' => round($g['total_ms'] / $g['count'], 2),
+                'max_ms' => $g['max_ms'],
+                'originFrame' => $g['originFrame'],
+                'chain' => $g['chain'],
+                'seen_on' => \array_slice(array_keys($g['seen_on']), 0, 5),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Groepeert op (shape + origin): een echte N+1 is dezelfde query die vanuit
+     * één regel in een lus herhaald wordt. Zonder backtrace is de origin leeg en
+     * valt dit terug op groeperen op shape alleen.
+     *
+     * @param list<Query> $queries
+     *
+     * @return array<string, OriginGroup>
+     */
+    public static function groupByShapeAndOrigin(array $queries): array
+    {
+        $groups = [];
+        foreach ($queries as $i => $q) {
+            $shape = Sql::normalize($q['sql']);
+            $tf = Sql::topFrame($q['backtrace']);
+            $key = $shape.' '.(null !== $tf ? Sql::formatFrame($tf) : '');
+            if (!isset($groups[$key])) {
+                $groups[$key] = [
+                    'shape' => $shape, 'count' => 0, 'total_ms' => 0.0, 'sample_sql' => $q['sql'],
+                    'originFrame' => $tf, 'chain' => null !== $tf ? Sql::frameChain($q['backtrace']) : [],
+                    'firstIndex' => $i,
+                ];
+            }
+            ++$groups[$key]['count'];
+            $groups[$key]['total_ms'] += $q['ms'];
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Verdachten (>= $threshold herhalingen), meest herhaald eerst, met de
+     * vermoedelijke parent: de query direct vóór de eerste herhaling is vaak
+     * degene waarvan het resultaat wordt geïtereerd — de klassieke 1+N-signatuur.
+     *
+     * @param array<string, OriginGroup> $groups
+     * @param list<Query>                $queries
+     *
+     * @return list<Suspect>
+     */
+    public static function nPlusOneSuspects(array $groups, array $queries, int $threshold): array
+    {
+        $suspects = array_filter($groups, static fn (array $g): bool => $g['count'] >= $threshold);
+        usort($suspects, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
+
+        $out = [];
+        foreach ($suspects as $g) {
+            $likelyParent = null;
+            if ($g['firstIndex'] > 0) {
+                $parent = $queries[$g['firstIndex'] - 1];
+                $parentShape = Sql::normalize($parent['sql']);
+                if ($parentShape !== $g['shape']) {
+                    $pf = Sql::topFrame($parent['backtrace']);
+                    $likelyParent = [
+                        'sql_shape' => mb_substr($parentShape, 0, 300),
+                        'origin' => null !== $pf ? Sql::formatFrame($pf) : null,
+                    ];
+                }
+            }
+            $out[] = [
+                'executions' => $g['count'],
+                'total_ms' => round($g['total_ms'], 1),
+                'sample_sql' => mb_substr($g['sample_sql'], 0, 400),
+                'originFrame' => $g['originFrame'],
+                'chain' => $g['chain'],
+                'likely_parent' => $likelyParent,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param list<Query> $queries
+     *
+     * @return array<string, int> shape => aantal uitvoeringen
+     */
+    public static function countByShape(array $queries): array
+    {
+        $m = [];
+        foreach ($queries as $q) {
+            $shape = Sql::normalize($q['sql']);
+            $m[$shape] = ($m[$shape] ?? 0) + 1;
+        }
+
+        return $m;
+    }
+
+    /**
+     * Welke query-shapes zijn verdwenen, bijgekomen of in aantal veranderd
+     * tussen twee requests (voor profile_diff).
+     *
+     * @param array<string, int> $before
+     * @param array<string, int> $after
+     *
+     * @return array{
+     *     removed: list<array{sql_shape: string, executions: int}>,
+     *     added: list<array{sql_shape: string, executions: int}>,
+     *     changed: list<array{sql_shape: string, before: int, after: int}>,
+     * }
+     */
+    public static function diff(array $before, array $after): array
+    {
+        $removed = [];
+        $added = [];
+        $changed = [];
+        foreach ($before as $shape => $count) {
+            if (!isset($after[$shape])) {
+                $removed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
+            } elseif ($after[$shape] !== $count) {
+                $changed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'before' => $count, 'after' => $after[$shape]];
+            }
+        }
+        foreach ($after as $shape => $count) {
+            if (!isset($before[$shape])) {
+                $added[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
+            }
+        }
+
+        return ['removed' => $removed, 'added' => $added, 'changed' => $changed];
+    }
+}

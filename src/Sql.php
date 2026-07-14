@@ -11,15 +11,46 @@ namespace Skrepr\SymfonyMate;
  */
 final class Sql
 {
-    /** SQL normaliseren zodat identieke query-shapes samenvallen. */
+    /**
+     * SQL normaliseren zodat identieke query-shapes samenvallen. Double-quoted
+     * strings blijven bewust staan: dat zijn standaard-SQL identifiers, en die
+     * vervangen zou verschillende queries onterecht laten samenvallen.
+     */
     public static function normalize(string $sql): string
     {
-        $s = preg_replace('/\s+/', ' ', $sql) ?? $sql;
-        $s = preg_replace("/'(?:[^'\\\\]|\\\\.)*'/", '?', $s) ?? $s;   // string-literals
+        $s = preg_replace('/\$(\w*)\$.*?\$\1\$/s', '?', $sql) ?? $sql;  // dollar-quoted literals (PostgreSQL)
+        $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+        $s = preg_replace("/'(?:[^'\\\\]|\\\\.|'')*'/", '?', $s) ?? $s; // string-literals (met \' en '' escapes)
         $s = preg_replace('/\b\d+(\.\d+)?\b/', '?', $s) ?? $s;          // getallen
         $s = preg_replace('/IN\s*\(\s*(?:\?\s*,?\s*)+\)/i', 'IN (?)', $s) ?? $s;
 
         return trim($s);
+    }
+
+    /**
+     * True wanneer de string meer dan één SQL-statement bevat. String-literals,
+     * quoted identifiers en comments worden eerst gestript zodat een ';' dáárin
+     * niet meetelt; afsluitende ';'s tellen evenmin.
+     */
+    public static function hasMultipleStatements(string $sql): bool
+    {
+        $stripped = preg_replace(
+            [
+                "/'(?:[^'\\\\]|\\\\.|'')*'/s",  // single-quoted literals (met \' en '' escapes)
+                '/"(?:[^"\\\\]|\\\\.)*"/s',      // double-quoted literals/identifiers
+                '/`[^`]*`/s',                     // backtick-identifiers (MySQL)
+                '/--[^\r\n]*/',                   // regel-comments
+                '/#[^\r\n]*/',                    // regel-comments (MySQL)
+                '~/\*.*?\*/~s',                   // blok-comments
+            ],
+            ' ',
+            $sql,
+        );
+        if (null === $stripped) {
+            return true; // regex-fout: veilig weigeren
+        }
+
+        return str_contains(rtrim($stripped, "; \t\n\r"), ';');
     }
 
     /**

@@ -14,7 +14,7 @@ use Mcp\Capability\Attribute\McpTool;
  * ongebruikte index, filesort).
  *
  * Een herbruikbare extensie kent de app-connectie niet, dus de tool bouwt zelf
- * een verbinding op uit een DSN: de parameter skrepr_runtime_mate.database_url,
+ * een verbinding op uit een DSN: de parameter skrepr_mate.database_url,
  * met terugval op de DATABASE_URL uit de omgeving (zet mate.env_file in je app).
  */
 final class ExplainTool
@@ -40,9 +40,16 @@ final class ExplainTool
     )]
     public function explainQuery(string $sql, array $params = [], bool $analyze = false): string
     {
-        $sql = trim($sql);
+        $sql = rtrim(trim($sql), "; \t\n\r");
         if ('' === $sql) {
             return $this->json(['error' => 'explain_query vereist een SQL-string.']);
+        }
+
+        // De read-only-check hieronder kijkt alleen naar het eerste statement;
+        // een tweede statement ('SELECT 1; DELETE ...') zou bij drivers met
+        // emulated prepares gewoon uitgevoerd worden. Hard weigeren dus.
+        if (Sql::hasMultipleStatements($sql)) {
+            return $this->json(['error' => 'Meerdere SQL-statements gedetecteerd — explain_query accepteert er precies één.']);
         }
 
         // ANALYZE voert de query echt uit; voor niet-SELECT's zou dat de write
@@ -77,7 +84,7 @@ final class ExplainTool
             'platform' => $platform,
             'statement' => $statement,
             'analyzed' => $analyze,
-            'warnings' => $this->warnings($platform, $rows),
+            'warnings' => self::warnings($platform, $rows),
             'rows' => $rows,
         ]);
     }
@@ -92,7 +99,7 @@ final class ExplainTool
             ? $this->databaseUrl
             : (\is_string($fallback) ? $fallback : '');
         if ('' === $url) {
-            throw new \RuntimeException('geen DSN geconfigureerd — zet skrepr_runtime_mate.database_url in je mate-config, of DATABASE_URL in de omgeving.');
+            throw new \RuntimeException('geen DSN geconfigureerd — zet skrepr_mate.database_url in je mate-config, of DATABASE_URL in de omgeving.');
         }
 
         // Via DsnParser i.p.v. ['url' => ...]: dat laatste werkt niet meer op DBAL 4.x.
@@ -134,8 +141,10 @@ final class ExplainTool
      * @param list<array<string, mixed>> $rows
      *
      * @return list<string>
+     *
+     * @internal publiek voor tests
      */
-    private function warnings(string $platform, array $rows): array
+    public static function warnings(string $platform, array $rows): array
     {
         $w = [];
         if ('mysql' === $platform) {

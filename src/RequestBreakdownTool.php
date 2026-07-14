@@ -27,8 +27,7 @@ final class RequestBreakdownTool
     public function requestBreakdown(?string $token = null, ?string $urlFilter = null): string
     {
         if (null === $token || '' === $token) {
-            $metas = $this->reader->findRecent(1, $urlFilter ?? '');
-            $token = $metas[0]['token'] ?? null;
+            $token = $this->reader->latestToken($urlFilter ?? '');
         }
         if (null === $token) {
             return $this->json(['error' => 'Geen requests gevonden — doe eerst een request naar de app.']);
