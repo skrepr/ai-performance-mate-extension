@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Truncatie-signaal nu overal consequent: `profile_diff` en `detect_n_plus_one` melden voortaan `sql_shape_truncated`/`sample_sql_truncated` bij afgekapte SQL; de shape-limiet is geüniformeerd op 400 tekens (was 300 in `profile_diff` en `likely_parent`)
+- Eén consistente fallback-melding voor `origin` wanneer backtraces ontbreken (verwijst naar `doctrine.dbal.profiling_collect_backtrace`)
+- `profile_diff` meldt bij een onleesbaar profiel nu wélk token het betreft
+
 ## 0.1.0 — 2026-07-14
 
 Eerste release.

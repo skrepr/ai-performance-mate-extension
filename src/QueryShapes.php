@@ -15,10 +15,16 @@ namespace Skrepr\PerformanceMate;
  * @phpstan-type ShapeGroup array{total_ms: float, count: int, max_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, seen_on: array<string, true>}
  * @phpstan-type RankedShape array{sql_shape: string, total_ms: float, executions: int, avg_ms: float, max_ms: float, originFrame: Frame|null, chain: list<string>, seen_on: list<string>}
  * @phpstan-type OriginGroup array{shape: string, count: int, total_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, firstIndex: int}
- * @phpstan-type Suspect array{executions: int, total_ms: float, sample_sql: string, originFrame: Frame|null, chain: list<string>, likely_parent: array{sql_shape: string, origin: string|null}|null}
+ * @phpstan-type Suspect array{executions: int, total_ms: float, sample_sql: string, sample_sql_truncated?: true, originFrame: Frame|null, chain: list<string>, likely_parent: array{sql_shape: string, sql_shape_truncated?: true, origin: string|null}|null}
  */
 final class QueryShapes
 {
+    /** Maximale lengte van een sql_shape in tool-output; langer krijgt een sql_shape_truncated-signaal. */
+    public const MAX_SHAPE_CHARS = 400;
+
+    /** Maximale lengte van sample_sql in tool-output; langer krijgt een sample_sql_truncated-signaal. */
+    public const MAX_SAMPLE_SQL_CHARS = 400;
+
     /**
      * Telt de queries van één request bij in de shape-groepen (voor slow_queries).
      * De origin-frames van de eerste query mét backtrace winnen per groep.
@@ -136,22 +142,42 @@ final class QueryShapes
                 if ($parentShape !== $g['shape']) {
                     $pf = Sql::topFrame($parent['backtrace']);
                     $likelyParent = [
-                        'sql_shape' => mb_substr($parentShape, 0, 300),
+                        ...self::truncateShape($parentShape),
                         'origin' => null !== $pf ? Sql::formatFrame($pf) : null,
                     ];
                 }
             }
-            $out[] = [
+            $suspect = [
                 'executions' => $g['count'],
                 'total_ms' => round($g['total_ms'], 1),
-                'sample_sql' => mb_substr($g['sample_sql'], 0, 400),
+                'sample_sql' => mb_substr($g['sample_sql'], 0, self::MAX_SAMPLE_SQL_CHARS),
                 'originFrame' => $g['originFrame'],
                 'chain' => $g['chain'],
                 'likely_parent' => $likelyParent,
             ];
+            if (mb_strlen($g['sample_sql']) > self::MAX_SAMPLE_SQL_CHARS) {
+                $suspect['sample_sql_truncated'] = true;
+            }
+            $out[] = $suspect;
         }
 
         return $out;
+    }
+
+    /**
+     * Shape afkappen op MAX_SHAPE_CHARS, mét truncatie-signaal (conform de
+     * Mate-designprincipes): de agent moet weten dat hij over een sample
+     * redeneert, niet over de volledige query.
+     *
+     * @return array{sql_shape: string, sql_shape_truncated?: true}
+     */
+    public static function truncateShape(string $shape): array
+    {
+        if (mb_strlen($shape) <= self::MAX_SHAPE_CHARS) {
+            return ['sql_shape' => $shape];
+        }
+
+        return ['sql_shape' => mb_substr($shape, 0, self::MAX_SHAPE_CHARS), 'sql_shape_truncated' => true];
     }
 
     /**
@@ -178,9 +204,9 @@ final class QueryShapes
      * @param array<string, int> $after
      *
      * @return array{
-     *     removed: list<array{sql_shape: string, executions: int}>,
-     *     added: list<array{sql_shape: string, executions: int}>,
-     *     changed: list<array{sql_shape: string, before: int, after: int}>,
+     *     removed: list<array{sql_shape: string, sql_shape_truncated?: true, executions: int}>,
+     *     added: list<array{sql_shape: string, sql_shape_truncated?: true, executions: int}>,
+     *     changed: list<array{sql_shape: string, sql_shape_truncated?: true, before: int, after: int}>,
      * }
      */
     public static function diff(array $before, array $after): array
@@ -190,14 +216,14 @@ final class QueryShapes
         $changed = [];
         foreach ($before as $shape => $count) {
             if (!isset($after[$shape])) {
-                $removed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
+                $removed[] = [...self::truncateShape($shape), 'executions' => $count];
             } elseif ($after[$shape] !== $count) {
-                $changed[] = ['sql_shape' => mb_substr($shape, 0, 300), 'before' => $count, 'after' => $after[$shape]];
+                $changed[] = [...self::truncateShape($shape), 'before' => $count, 'after' => $after[$shape]];
             }
         }
         foreach ($after as $shape => $count) {
             if (!isset($before[$shape])) {
-                $added[] = ['sql_shape' => mb_substr($shape, 0, 300), 'executions' => $count];
+                $added[] = [...self::truncateShape($shape), 'executions' => $count];
             }
         }
 

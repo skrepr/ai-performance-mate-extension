@@ -8,7 +8,7 @@ use Mcp\Capability\Attribute\McpTool;
 
 final class NPlusOneTool
 {
-    use JsonResponse;
+    use ResolvesProfile;
 
     public function __construct(
         private readonly ProfileReader $reader,
@@ -28,19 +28,9 @@ final class NPlusOneTool
     public function detectNPlusOne(?string $token = null, ?string $urlFilter = null, int $threshold = 5): string
     {
         $threshold = max(2, $threshold);
-        if (null === $token || '' === $token) {
-            $token = $this->reader->latestToken($urlFilter ?? '');
-        }
-        if (null === $token) {
-            return $this->json(['error' => 'Geen requests gevonden — doe eerst een request naar de app.']);
-        }
-        try {
-            $profile = $this->reader->read($token);
-        } catch (ProfileTooLargeException $e) {
-            return $this->json(['error' => $e->getMessage()]);
-        }
-        if (null === $profile) {
-            return $this->json(['error' => "Geen profiel gevonden voor token {$token}."]);
+        $profile = $this->resolveProfile($token, $urlFilter);
+        if (\is_string($profile)) {
+            return $profile;
         }
         $queries = $profile['queries'];
 
@@ -52,11 +42,8 @@ final class NPlusOneTool
                 'executions' => $s['executions'],
                 'total_ms' => $s['total_ms'],
                 'sample_sql' => $s['sample_sql'],
-                'origin' => null !== $s['originFrame']
-                    ? Sql::formatFrame($s['originFrame'])
-                    : 'onbekend — zet profiling_collect_backtrace aan voor bestand:regel',
-                'origin_chain' => \count($s['chain']) > 1 ? $s['chain'] : null,
-                'origin_context' => Sql::sourceContext($s['originFrame']),
+                ...(($s['sample_sql_truncated'] ?? false) ? ['sample_sql_truncated' => true] : []),
+                ...Sql::originFields($s['originFrame'], $s['chain']),
                 'likely_parent' => $s['likely_parent'],
                 'hint' => 'Overweeg een JOIN/fetch-join, batch-loading of fetch: EAGER voor deze relatie.',
             ];

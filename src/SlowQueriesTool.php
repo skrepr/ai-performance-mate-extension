@@ -49,21 +49,13 @@ final class SlowQueriesTool
 
         $ranked = [];
         foreach (QueryShapes::rank($groups, $top) as $g) {
-            $shape = $g['sql_shape'];
             $ranked[] = [
-                'sql_shape' => mb_substr($shape, 0, 400),
-                // Signaal conform Mate-designprincipes: de agent moet weten dat hij
-                // over een sample redeneert, niet over de volledige query.
-                ...(mb_strlen($shape) > 400 ? ['sql_shape_truncated' => true] : []),
+                ...QueryShapes::truncateShape($g['sql_shape']),
                 'total_ms' => $g['total_ms'],
                 'executions' => $g['executions'],
                 'avg_ms' => $g['avg_ms'],
                 'max_ms' => $g['max_ms'],
-                'origin' => null !== $g['originFrame']
-                    ? Sql::formatFrame($g['originFrame'])
-                    : 'onbekend — zet doctrine.dbal.profiling_collect_backtrace: true in config/packages/dev/doctrine.yaml',
-                'origin_chain' => \count($g['chain']) > 1 ? $g['chain'] : null,
-                'origin_context' => Sql::sourceContext($g['originFrame']),
+                ...Sql::originFields($g['originFrame'], $g['chain']),
                 'seen_on' => $g['seen_on'],
             ];
         }

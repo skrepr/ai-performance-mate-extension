@@ -8,6 +8,7 @@ namespace Skrepr\PerformanceMate;
  * Pure SQL-/backtrace-helpers.
  *
  * @phpstan-type Frame array{file: string, line: int|null, call: string}
+ * @phpstan-type SourceContext array{file: string, line: int, snippet: list<array{line: int, code: string, origin?: true}>}
  */
 final class Sql
 {
@@ -100,12 +101,33 @@ final class Sql
     }
 
     /**
+     * De drie origin-velden voor tool-output, met één consistente, actionable
+     * fallback wanneer er geen backtrace beschikbaar is. origin_chain is alleen
+     * gevuld als hij méér vertelt dan origin zelf (meer dan één frame).
+     *
+     * @param Frame|null   $frame
+     * @param list<string> $chain
+     *
+     * @return array{origin: string, origin_chain: list<string>|null, origin_context: SourceContext|null}
+     */
+    public static function originFields(?array $frame, array $chain): array
+    {
+        return [
+            'origin' => null !== $frame
+                ? self::formatFrame($frame)
+                : 'onbekend — zet doctrine.dbal.profiling_collect_backtrace: true in config/packages/dev/doctrine.yaml',
+            'origin_chain' => \count($chain) > 1 ? $chain : null,
+            'origin_context' => self::sourceContext($frame),
+        ];
+    }
+
+    /**
      * Leest de veroorzakende regel + omliggende context uit de projectbron. De
      * tool draait in de container, dus de absolute frame-paden zijn direct leesbaar.
      *
      * @param Frame|null $frame
      *
-     * @return array{file: string, line: int, snippet: list<array{line: int, code: string, origin?: true}>}|null
+     * @return SourceContext|null
      */
     public static function sourceContext(?array $frame, int $radius = 3): ?array
     {

@@ -174,4 +174,39 @@ final class QueryShapesTest extends TestCase
 
         self::assertSame(['removed' => [], 'added' => [], 'changed' => []], QueryShapes::diff($shapes, $shapes));
     }
+
+    public function testTruncateShapeSignalsTruncation(): void
+    {
+        // Korte shapes blijven ongemoeid, zonder signaal.
+        self::assertSame(['sql_shape' => 'SELECT 1 FROM t'], QueryShapes::truncateShape('SELECT 1 FROM t'));
+
+        $long = 'SELECT '.str_repeat('kolom, ', 100).'x FROM t';
+        $truncated = QueryShapes::truncateShape($long);
+        self::assertSame(mb_substr($long, 0, QueryShapes::MAX_SHAPE_CHARS), $truncated['sql_shape']);
+        self::assertTrue($truncated['sql_shape_truncated'] ?? false);
+    }
+
+    public function testDiffTruncatesLongShapesWithSignal(): void
+    {
+        $long = 'SELECT '.str_repeat('a', 500);
+
+        $diff = QueryShapes::diff([$long => 1], [$long => 2, 'SELECT 1 FROM nieuw' => 1]);
+
+        self::assertSame(mb_substr($long, 0, QueryShapes::MAX_SHAPE_CHARS), $diff['changed'][0]['sql_shape']);
+        self::assertTrue($diff['changed'][0]['sql_shape_truncated'] ?? false);
+        // Niet-getrunceerde shapes krijgen géén signaal.
+        self::assertArrayNotHasKey('sql_shape_truncated', $diff['added'][0]);
+    }
+
+    public function testNPlusOneSuspectsTruncateSampleSqlWithSignal(): void
+    {
+        $long = 'SELECT * FROM child WHERE blob = '.str_repeat('9', 500);
+        $queries = [self::query($long, 1.0), self::query($long, 1.0)];
+
+        $suspects = QueryShapes::nPlusOneSuspects(QueryShapes::groupByShapeAndOrigin($queries), $queries, 2);
+
+        self::assertCount(1, $suspects);
+        self::assertSame(mb_substr($long, 0, QueryShapes::MAX_SAMPLE_SQL_CHARS), $suspects[0]['sample_sql']);
+        self::assertTrue($suspects[0]['sample_sql_truncated'] ?? false);
+    }
 }

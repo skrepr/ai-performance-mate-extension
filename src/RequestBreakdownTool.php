@@ -8,7 +8,7 @@ use Mcp\Capability\Attribute\McpTool;
 
 final class RequestBreakdownTool
 {
-    use JsonResponse;
+    use ResolvesProfile;
 
     public function __construct(
         private readonly ProfileReader $reader,
@@ -26,19 +26,9 @@ final class RequestBreakdownTool
     )]
     public function requestBreakdown(?string $token = null, ?string $urlFilter = null): string
     {
-        if (null === $token || '' === $token) {
-            $token = $this->reader->latestToken($urlFilter ?? '');
-        }
-        if (null === $token) {
-            return $this->json(['error' => 'Geen requests gevonden — doe eerst een request naar de app.']);
-        }
-        try {
-            $p = $this->reader->read($token);
-        } catch (ProfileTooLargeException $e) {
-            return $this->json(['error' => $e->getMessage()]);
-        }
-        if (null === $p) {
-            return $this->json(['error' => "Geen profiel gevonden voor token {$token}."]);
+        $p = $this->resolveProfile($token, $urlFilter);
+        if (\is_string($p)) {
+            return $p;
         }
 
         $total = $p['duration_ms'] ?? 0.0;

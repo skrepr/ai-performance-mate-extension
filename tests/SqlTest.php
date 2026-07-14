@@ -154,6 +154,35 @@ final class SqlTest extends TestCase
         }
     }
 
+    public function testOriginFieldsWithFrame(): void
+    {
+        $frame = ['file' => '/app/src/Repo.php', 'line' => 10, 'call' => 'Repo::find'];
+        $chain = ['/app/src/Repo.php:10 (Repo::find)', '/app/src/Controller.php:20 (Controller::show)'];
+
+        $fields = Sql::originFields($frame, $chain);
+
+        self::assertSame('/app/src/Repo.php:10 (Repo::find)', $fields['origin']);
+        self::assertSame($chain, $fields['origin_chain']);
+        // Het frame-bestand bestaat hier niet, dus geen broncontext.
+        self::assertNull($fields['origin_context']);
+    }
+
+    public function testOriginFieldsChainOfOneAddsNothingBeyondOrigin(): void
+    {
+        $frame = ['file' => '/app/src/Repo.php', 'line' => 10, 'call' => 'Repo::find'];
+
+        self::assertNull(Sql::originFields($frame, ['/app/src/Repo.php:10 (Repo::find)'])['origin_chain']);
+    }
+
+    public function testOriginFieldsWithoutFrameFallsBackToHint(): void
+    {
+        $fields = Sql::originFields(null, []);
+
+        self::assertStringContainsString('profiling_collect_backtrace', $fields['origin']);
+        self::assertNull($fields['origin_chain']);
+        self::assertNull($fields['origin_context']);
+    }
+
     public function testSourceContextReturnsNullForMissingFileOrInvalidLine(): void
     {
         self::assertNull(Sql::sourceContext(null));

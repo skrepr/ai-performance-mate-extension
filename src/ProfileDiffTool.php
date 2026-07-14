@@ -8,7 +8,7 @@ use Mcp\Capability\Attribute\McpTool;
 
 final class ProfileDiffTool
 {
-    use JsonResponse;
+    use ResolvesProfile;
 
     public function __construct(
         private readonly ProfileReader $reader,
@@ -27,9 +27,9 @@ final class ProfileDiffTool
     )]
     public function profileDiff(?string $tokenBefore = null, ?string $tokenAfter = null, ?string $urlFilter = null): string
     {
-        $before = $tokenBefore;
-        $after = $tokenAfter;
-        if (null === $before || '' === $before || null === $after || '' === $after) {
+        $before = null !== $tokenBefore && '' !== $tokenBefore ? $tokenBefore : null;
+        $after = null !== $tokenAfter && '' !== $tokenAfter ? $tokenAfter : null;
+        if (null === $before || null === $after) {
             $metas = $this->reader->findRecent(2, $urlFilter ?? '');
             if (\count($metas) < 2) {
                 return $this->json(['error' => 'Minstens twee requests naar dit endpoint nodig om te vergelijken.']);
@@ -38,14 +38,13 @@ final class ProfileDiffTool
             $before ??= $metas[1]['token'];  // een eerder
         }
 
-        try {
-            $pBefore = $this->reader->read($before);
-            $pAfter = $this->reader->read($after);
-        } catch (ProfileTooLargeException $e) {
-            return $this->json(['error' => $e->getMessage()]);
+        $pBefore = $this->resolveProfile($before, null);
+        if (\is_string($pBefore)) {
+            return $pBefore;
         }
-        if (null === $pBefore || null === $pAfter) {
-            return $this->json(['error' => 'Eén van beide profielen kon niet gelezen worden.']);
+        $pAfter = $this->resolveProfile($after, null);
+        if (\is_string($pAfter)) {
+            return $pAfter;
         }
 
         $diff = QueryShapes::diff(
