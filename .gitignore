@@ -1,7 +1,12 @@
 /vendor/
 /var/
 composer.lock
-.phpunit.result.cache
 .phpunit.cache/
-.phpstan/
 .DS_Store
+
+# artefacten van 'vendor/bin/mate init' (dit repo is zelf een Mate-rootproject voor rooktests)
+/mate/
+/mcp.json
+/.mcp.json
+/bin/codex
+/bin/codex.bat
